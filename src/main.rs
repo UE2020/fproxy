@@ -14,7 +14,6 @@ fn handle_client(stream: &mut TcpStream) -> std::io::Result<()> {
         "CONNECT" => {
             // Get the hostname
             let hostname = parser.consume_until(" HTTP/1.1\r\n")?;
-            println!("hostname: {}", hostname);
             
             parser.consume_until("\r\n\r\n")?;
 
