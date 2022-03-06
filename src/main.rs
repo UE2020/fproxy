@@ -1,4 +1,4 @@
-use std::io::{prelude::*, Error, ErrorKind};
+use std::io::{prelude::*, Cursor, Error, ErrorKind};
 use std::net::{TcpListener, TcpStream};
 use std::thread::spawn;
 
@@ -7,26 +7,22 @@ pub use parser::Parser;
 
 fn handle_client(stream: &mut TcpStream) -> std::io::Result<()> {
     // Check the method
-    let mut buffer = vec![0; 8000];
-    let len = stream.read(&mut buffer)?;
-    if len == 0 {
-        return Ok(());
-    }
-    buffer.resize(len, 0);
-    let mut parser = Parser::new(String::from_utf8(buffer).map_err(|_| Error::new(ErrorKind::InvalidData, "Invalid UTF-8"))?);
-    let method = parser
-        .consume_until(" ")
-        .ok_or(Error::new(ErrorKind::InvalidData, "No method"))?;
-    match method {
+    let mut parser = Parser::new(stream);
+    let method = parser.consume_until(" ")?;
+
+    match method.as_str() {
         "CONNECT" => {
             // Get the hostname
-            let hostname = parser
-                .consume_until(" HTTP/1.1\r\n")
-                .ok_or(Error::new(ErrorKind::InvalidData, "No hostname"))?;
+            let hostname = parser.consume_until(" HTTP/1.1\r\n")?;
+            println!("hostname: {}", hostname);
+            
+            parser.consume_until("\r\n\r\n")?;
 
-            stream.write(b"HTTP/1.1 200 OK\r\n\r\n")?;
+            parser.inner().write(b"HTTP/1.1 200 OK\r\n\r\n")?;
 
             let mut proxy_stream = TcpStream::connect(hostname)?;
+
+            let stream = parser.into_inner();
 
             // Disable nagle
             proxy_stream.set_nodelay(true)?;
@@ -64,61 +60,69 @@ fn handle_client(stream: &mut TcpStream) -> std::io::Result<()> {
 
             Ok(())
         }
-        "GET" => {
+        "GET" | "POST" | "PUT" | "PATCH" | "DELETE" => {
             // Get the path
-            let path = parser
-                .consume_until(" HTTP/1.1\r\n")
-                .ok_or(Error::new(ErrorKind::InvalidData, "No path"))?
-                .to_string();
+            let path = parser.consume_until(" HTTP/1.1\r\n")?;
 
             // Get the headers
             let mut ua = String::new();
+            let mut content_length = 0;
             loop {
-                let line = parser
-                    .consume_until("\r\n")
-                    .ok_or(Error::new(ErrorKind::InvalidData, "No headers"))?
-                    .to_string();
+                let line = parser.consume_until("\r\n")?;
+
                 if line.len() == 0 {
                     break;
                 }
-                let mut header_parser = Parser::new(line);
-                let key = header_parser
-                    .consume_until(":")
-                    .ok_or(Error::new(ErrorKind::InvalidData, "No key"))?
-                    .to_string();
-                header_parser.consume_whitespaces();
-                let value = header_parser.consume_until_end().to_string();
-                if key == "User-Agent" {
-                    ua = value.trim_start().to_string();
+                let mut header_parser = Parser::new(Cursor::new(line));
+                let key = header_parser.consume_until(":")?;
+                header_parser.consume_whitespaces()?;
+                let value = header_parser.consume_until_end()?;
+                match key.as_str() {
+                    "User-Agent" => ua = value,
+                    "Content-Length" => content_length = value.parse::<usize>().unwrap(),
+                    _ => (),
                 }
             }
 
+            // Get the body
+            let mut body = vec![0u8; content_length];
+            if content_length > 0 {
+                parser.inner().read_exact(&mut body)?;
+            }
+
             // Make the http request
-            let mut path_parser = Parser::new(path.to_string());
+            let mut path_parser = Parser::new(Cursor::new(path.to_string()));
             // Consume the protocol
             let _ = path_parser.consume_until("://");
-            let host = path_parser
-                .consume_until("/")
-                .ok_or(Error::new(ErrorKind::InvalidData, "No host"))?
-                .to_string();
+            let host = path_parser.consume_until("/")?;
 
-            let path = format!("/{}", path_parser.consume_until_end());
+            let path = format!("/{}", path_parser.consume_until_end()?);
 
-            let request = format!(
-                "GET {} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\nUser-Agent: {}\r\n\r\n",
-                path, host, ua
-            );
+            let request = if content_length > 0 {
+                let mut request = format!(
+                    "{} {} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\nUser-Agent: {}\r\nContent-Length: {}\r\n\r\n",
+                    method, path, host, ua, content_length
+                ).as_bytes().to_vec();
+    
+                request.append(&mut body);
+                request
+            } else {
+                format!(
+                    "{} {} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\nUser-Agent: {}\r\n\r\n",
+                    method, path, host, ua
+                ).as_bytes().to_vec()
+            };
 
             // Make the connection
             let mut proxy_stream = TcpStream::connect(format!("{}:80", host))?;
-            proxy_stream.write_all(request.as_bytes())?;
+            proxy_stream.write_all(&request)?;
 
             // Get the response
             let mut buffer = Vec::new();
             proxy_stream.read_to_end(&mut buffer)?;
 
             // Write the response
-            stream.write_all(&buffer)?;
+            parser.inner().write_all(&buffer)?;
 
             Ok(())
         }
@@ -129,8 +133,11 @@ fn handle_client(stream: &mut TcpStream) -> std::io::Result<()> {
 fn main() -> std::io::Result<()> {
     // Get the port from the command line
     let port = std::env::args()
-        .nth(1).expect("No port specified").parse::<u16>().expect("Invalid port");
-    
+        .nth(1)
+        .expect("No port specified")
+        .parse::<u16>()
+        .expect("Invalid port");
+
     let listener = TcpListener::bind(format!("0.0.0.0:{}", port))?;
 
     // accept connections and process them serially
@@ -152,14 +159,19 @@ mod tests {
 
     #[test]
     fn parser_consume_until() {
-        let mut parser = Parser::new("qwertyuioptest".to_string());
-        assert_eq!(parser.consume_until("test"), Some("qwertyuiop"));
+        use std::io::Cursor;
 
-        let mut parser = Parser::new("nothing".to_string());
-        assert_eq!(parser.consume_until("test"), None);
+        let mut parser = Parser::new(Cursor::new("qwertyuioptest".to_string()));
+        assert_eq!(
+            parser.consume_until("test").unwrap(),
+            "qwertyuiop".to_string()
+        );
 
-        let mut parser = Parser::new("randomdata   test1 test2".to_string());
-        assert_eq!(parser.consume_until("test"), Some("randomdata   "));
-        assert_eq!(parser.consume_until("test"), Some("1 "));
+        let mut parser = Parser::new(Cursor::new("nothing".to_string()));
+        assert!(parser.consume_until("test").is_err());
+
+        let mut parser = Parser::new(Cursor::new("randomdata   test1 test2".to_string()));
+        assert_eq!(parser.consume_until("test").unwrap(), "randomdata   ");
+        assert_eq!(parser.consume_until("test").unwrap(), "1 ");
     }
 }

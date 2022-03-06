@@ -1,69 +1,65 @@
-use std::io::Result;
+use std::io::{prelude::*, Result};
 
 #[derive(Debug)]
-pub struct Parser {
-    data: String,
-    position: usize,
+pub struct Parser<T: Read> {
+    data: T,
 }
 
-impl Parser {
-    pub fn new(data: String) -> Self {
-        Parser { data, position: 0 }
+impl<T: Read> Parser<T> {
+    pub fn new(data: T) -> Self {
+        Parser { data }
     }
 
     /// Consume the data until we hit the needle
-    pub fn consume_until(&mut self, needle: &str) -> Option<&str> {
-        let start = self.position;
-        let mut s = 0;
+    pub fn consume_until(&mut self, needle: &str) -> Result<String> {
+        let mut consumed: String = String::new();
+        let mut streak = 0;
         loop {
-            let next = self.data.as_bytes().get(self.position)?;
-            if *next == *needle.as_bytes().get(s)? {
-                if s + 1 == needle.len() {
-                    self.position += 1;
+            let mut buf = [0u8; 1];
+            self.data.read_exact(&mut buf)?;
+            let next = buf[0] as char;
+            if next == needle.chars().nth(streak).unwrap() {
+                streak += 1;
+                if streak == needle.len() {
                     break;
                 }
-                s += 1;
             } else {
-                s = 0;
+                streak = 0;
             }
-            self.position += 1;
+            consumed.push(next);
         }
 
-        Some(&self.data[start..self.position - 1 - s])
+        // cut off the needle
+        for _ in 0..streak - 1 {
+            consumed.pop();
+        }
+
+        Ok(consumed)
     }
 
-    pub fn consume_until_end(&mut self) -> &str {
-        let start = self.position;
-        self.position = self.data.len();
-        &self.data[start..self.position]
+    pub fn consume_until_end(&mut self) -> Result<String> {
+        let mut buf = String::new();
+        self.data.read_to_string(&mut buf)?;
+        Ok(buf)
     }
 
     /// Returns false if the parser has reached the end of the data
-    pub fn consume_whitespaces(&mut self) -> bool {
+    pub fn consume_whitespaces(&mut self) -> Result<()> {
         loop {
-            let next = self.data.as_bytes().get(self.position);
-            if next.is_none() {
-                return true;
-            } else if !unsafe { next.unwrap_unchecked() }.is_ascii_whitespace() {
-                return false;
+            let mut buf = [0u8; 1];
+            self.data.read_exact(&mut buf)?;
+            // check if whitespace
+            if !(buf[0] as char).is_whitespace() {
+                break Ok(());
             }
-            self.position += 1;
         }
     }
 
-    pub fn into_data(self) -> (String, usize) {
-        (self.data, self.position)
+    pub fn inner(&mut self) -> &mut T {
+        &mut self.data
     }
 
-    pub fn wind(&mut self, position: usize) {
-        self.position += position;
-    }
-
-    pub fn rewind(&mut self, position: usize) {
-        self.position -= position;
-    }
-
-    pub fn position(&self) -> usize {
-        self.position
+    pub fn into_inner(self) -> T {
+        self.data
     }
 }
