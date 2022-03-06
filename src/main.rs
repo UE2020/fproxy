@@ -137,7 +137,9 @@ fn main() -> std::io::Result<()> {
         .parse::<u16>()
         .expect("Invalid port");
 
-    let listener = TcpListener::bind(format!("0.0.0.0:{}", port))?;
+    let addr = format!("0.0.0.0:{}", port);
+    let listener = TcpListener::bind(&addr)?;
+    println!("Listening on {}", addr);
 
     // accept connections and process them serially
     for stream in listener.incoming() {
