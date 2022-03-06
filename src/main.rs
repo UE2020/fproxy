@@ -14,6 +14,8 @@ fn handle_client(stream: &mut TcpStream) -> std::io::Result<()> {
         "CONNECT" => {
             // Get the hostname
             let hostname = parser.consume_until(" HTTP/1.1\r\n")?;
+
+            println!("CONNECT {}", hostname);
             
             parser.consume_until("\r\n\r\n")?;
 
@@ -94,7 +96,9 @@ fn handle_client(stream: &mut TcpStream) -> std::io::Result<()> {
             // Consume the protocol
             let _ = path_parser.consume_until("://");
             let host = path_parser.consume_until("/")?;
-
+            
+            println!("{} {}", method, host);
+            
             let path = format!("/{}", path_parser.consume_until_end()?);
 
             let request = if content_length > 0 {
