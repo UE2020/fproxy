@@ -13,7 +13,7 @@ fn handle_client(stream: &mut TcpStream) -> std::io::Result<()> {
         return Ok(());
     }
     buffer.resize(len, 0);
-    let mut parser = Parser::new(unsafe { String::from_utf8_unchecked(buffer) });
+    let mut parser = Parser::new(String::from_utf8(buffer).map_err(|_| Error::new(ErrorKind::InvalidData, "Invalid UTF-8"))?);
     let method = parser
         .consume_until(" ")
         .ok_or(Error::new(ErrorKind::InvalidData, "No method"))?;
@@ -23,7 +23,6 @@ fn handle_client(stream: &mut TcpStream) -> std::io::Result<()> {
             let hostname = parser
                 .consume_until(" HTTP/1.1\r\n")
                 .ok_or(Error::new(ErrorKind::InvalidData, "No hostname"))?;
-            println!("{} (len={})", hostname, hostname.len());
 
             stream.write(b"HTTP/1.1 200 OK\r\n\r\n")?;
 
@@ -71,7 +70,6 @@ fn handle_client(stream: &mut TcpStream) -> std::io::Result<()> {
                 .consume_until(" HTTP/1.1\r\n")
                 .ok_or(Error::new(ErrorKind::InvalidData, "No path"))?
                 .to_string();
-            println!("GET {} (len={})", path, path.len());
 
             // Get the headers
             let mut ua = String::new();
