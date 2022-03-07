@@ -8,6 +8,7 @@ pub use parser::Parser;
 
 fn handle_client(stream: &mut TcpStream) -> std::io::Result<()> {
     // Check the method
+    println!("Connection");
     let mut parser = Parser::new(stream);
     let method = parser.consume_until(" ")?;
 
@@ -82,6 +83,8 @@ fn handle_client(stream: &mut TcpStream) -> std::io::Result<()> {
                     headers.insert(key, value);
                 }
             }
+
+            headers.insert("Connection".to_string(), "close".to_string());
 
             let content_length = match headers.get("Content-Length") {
                 Some(value) => value.parse::<usize>().unwrap(),
