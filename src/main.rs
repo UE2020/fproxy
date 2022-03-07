@@ -79,7 +79,7 @@ fn handle_client(stream: &mut TcpStream) -> std::io::Result<()> {
                 let key = header_parser.consume_until(":")?;
                 header_parser.consume_whitespaces()?;
                 let value = header_parser.consume_until_end()?;
-                if key.to_lowercase() != "host" && !key.to_lowercase().starts_with("proxy-") {
+                if key.to_lowercase() != "host" && !key.to_lowercase().starts_with("proxy-") && key.to_lowercase() != "connection" {
                     headers.insert(key, value);
                 }
             }

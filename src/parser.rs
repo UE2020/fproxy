@@ -3,11 +3,12 @@ use std::io::{prelude::*, Result};
 #[derive(Debug)]
 pub struct Parser<T: Read> {
     data: T,
+    leftover: Option<u8>,
 }
 
 impl<T: Read> Parser<T> {
     pub fn new(data: T) -> Self {
-        Parser { data }
+        Parser { data, leftover: None }
     }
 
     /// Consume the data until we hit the needle
@@ -15,9 +16,8 @@ impl<T: Read> Parser<T> {
         let mut consumed: String = String::new();
         let mut streak = 0;
         loop {
-            let mut buf = [0u8; 1];
-            self.data.read_exact(&mut buf)?;
-            let next = buf[0] as char;
+            let byte = self.read_byte()?;
+            let next = byte as char;
             if next == needle.chars().nth(streak).unwrap() {
                 streak += 1;
                 if streak == needle.len() {
@@ -37,6 +37,17 @@ impl<T: Read> Parser<T> {
         Ok(consumed)
     }
 
+    fn read_byte(&mut self) -> Result<u8> {
+        if let Some(b) = self.leftover {
+            self.leftover = None;
+            return Ok(b);
+        }
+
+        let mut buf = [0u8; 1];
+        self.data.read_exact(&mut buf)?;
+        Ok(buf[0])
+    }
+
     pub fn consume_until_end(&mut self) -> Result<String> {
         let mut buf = String::new();
         self.data.read_to_string(&mut buf)?;
@@ -46,10 +57,10 @@ impl<T: Read> Parser<T> {
     /// Returns false if the parser has reached the end of the data
     pub fn consume_whitespaces(&mut self) -> Result<()> {
         loop {
-            let mut buf = [0u8; 1];
-            self.data.read_exact(&mut buf)?;
+            let byte = self.read_byte()?;
             // check if whitespace
-            if !(buf[0] as char).is_whitespace() {
+            if !(byte as char).is_whitespace() {
+                self.leftover = Some(byte);
                 break Ok(());
             }
         }
