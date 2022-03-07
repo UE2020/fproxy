@@ -8,7 +8,6 @@ pub use parser::Parser;
 
 fn handle_client(stream: &mut TcpStream) -> std::io::Result<()> {
     // Check the method
-    println!("Connection");
     let mut parser = Parser::new(stream);
     let method = parser.consume_until(" ")?;
 
