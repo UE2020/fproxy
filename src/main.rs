@@ -1,6 +1,7 @@
 use std::io::{prelude::*, Cursor, Error, ErrorKind};
 use std::net::{TcpListener, TcpStream};
 use std::thread::spawn;
+use std::collections::HashMap;
 
 pub mod parser;
 pub use parser::Parser;
@@ -66,8 +67,7 @@ fn handle_client(stream: &mut TcpStream) -> std::io::Result<()> {
             let path = parser.consume_until(" HTTP/1.1\r\n")?;
 
             // Get the headers
-            let mut ua = String::new();
-            let mut content_length = 0;
+            let mut headers = HashMap::new();
             loop {
                 let line = parser.consume_until("\r\n")?;
 
@@ -78,12 +78,15 @@ fn handle_client(stream: &mut TcpStream) -> std::io::Result<()> {
                 let key = header_parser.consume_until(":")?;
                 header_parser.consume_whitespaces()?;
                 let value = header_parser.consume_until_end()?;
-                match key.as_str() {
-                    "User-Agent" => ua = value,
-                    "Content-Length" => content_length = value.parse::<usize>().unwrap(),
-                    _ => (),
+                if key.to_lowercase() != "host" && !key.to_lowercase().starts_with("proxy-") {
+                    headers.insert(key, value);
                 }
             }
+
+            let content_length = match headers.get("Content-Length") {
+                Some(value) => value.parse::<usize>().unwrap(),
+                None => 0,
+            };
 
             // Get the body
             let mut body = vec![0u8; content_length];
@@ -103,16 +106,16 @@ fn handle_client(stream: &mut TcpStream) -> std::io::Result<()> {
 
             let request = if content_length > 0 {
                 let mut request = format!(
-                    "{} {} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\nUser-Agent: {}\r\nContent-Length: {}\r\n\r\n",
-                    method, path, host, ua, content_length
+                    "{} {} HTTP/1.1\r\nHost: {}\r\n{}\r\n\r\n",
+                    method, path, host, headers.iter().map(|(k, v)| format!("{}: {}", k, v)).collect::<Vec<String>>().join("\r\n")
                 ).as_bytes().to_vec();
     
                 request.append(&mut body);
                 request
             } else {
                 format!(
-                    "{} {} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\nUser-Agent: {}\r\n\r\n",
-                    method, path, host, ua
+                    "{} {} HTTP/1.1\r\nHost: {}\r\n{}\r\n\r\n",
+                    method, path, host, headers.iter().map(|(k, v)| format!("{}: {}", k, v)).collect::<Vec<String>>().join("\r\n")
                 ).as_bytes().to_vec()
             };
 
