@@ -1,5 +1,5 @@
 # fproxy
-`fproxy` is an extremely light-weight HTTP proxy server. This was developed from scratch in about an hour, with no dependencies. Benchmarks soon.
+`fproxy` is an extremely light-weight (1 dependency) asynchronous HTTP proxy server.
 
 ## Usage
 ```sh

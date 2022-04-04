@@ -1,58 +1,61 @@
-use std::io::{prelude::*, Cursor, Error, ErrorKind};
-use std::net::{TcpListener, TcpStream};
-use std::thread::spawn;
+use tokio::io::{ErrorKind, BufReader, AsyncWriteExt, AsyncReadExt};
+use tokio::task::spawn;
+use std::io::{Result, Error, Cursor};
+use tokio::net::{TcpListener, TcpStream};
 use std::collections::HashMap;
 
 pub mod parser;
 pub use parser::Parser;
 
-fn handle_client(stream: &mut TcpStream) -> std::io::Result<()> {
+async fn handle_client(stream: TcpStream) -> std::io::Result<()> {
     // Check the method
-    let mut parser = Parser::new(stream);
-    let method = parser.consume_until(" ")?;
+    let mut parser = Parser::new(BufReader::new(stream));
+    let method = parser.consume_until(" ").await?;
 
     match method.as_str() {
         "CONNECT" => {
             // Get the hostname
-            let hostname = parser.consume_until(" HTTP/1.1\r\n")?;
+            let hostname = parser.consume_until(" HTTP/1.1\r\n").await?;
 
             println!("CONNECT {}", hostname);
             
-            parser.consume_until("\r\n\r\n")?;
+            parser.consume_until("\r\n\r\n").await?;
 
-            parser.inner().write(b"HTTP/1.1 200 OK\r\n\r\n")?;
+            parser.inner().get_mut().write(b"HTTP/1.1 200 OK\r\n\r\n").await?;
 
-            let mut proxy_stream = TcpStream::connect(hostname)?;
+            let mut proxy_stream = TcpStream::connect(hostname).await?;
 
             let stream = parser.into_inner();
+            let stream = stream.into_inner();
 
             // Disable nagle
             proxy_stream.set_nodelay(true)?;
             stream.set_nodelay(true)?;
 
+            let (mut proxy_stream_read, mut proxy_stream_write) = proxy_stream.into_split();
+            let (mut stream_read, mut stream_write) = stream.into_split();
+
             {
-                let mut proxy_stream = proxy_stream.try_clone()?;
-                let mut stream = stream.try_clone()?;
-                spawn(move || loop {
+                spawn(async move { loop {
                     let mut buffer = [0; 65536];
-                    match stream.read(&mut buffer) {
+                    match stream_read.read(&mut buffer).await {
                         Ok(0) => break,
                         Ok(len) => {
-                            if proxy_stream.write_all(&buffer[..len]).is_err() {
+                            if proxy_stream_write.write_all(&buffer[..len]).await.is_err() {
                                 break;
                             }
                         }
                         Err(_) => break,
                     }
-                });
+                } });
             }
 
             loop {
                 let mut buffer = [0; 65536];
-                match proxy_stream.read(&mut buffer) {
+                match proxy_stream_read.read(&mut buffer).await {
                     Ok(0) => break,
                     Ok(len) => {
-                        if stream.write_all(&buffer[..len]).is_err() {
+                        if stream_write.write_all(&buffer[..len]).await.is_err() {
                             break;
                         }
                     }
@@ -64,20 +67,20 @@ fn handle_client(stream: &mut TcpStream) -> std::io::Result<()> {
         }
         "GET" | "POST" | "PUT" | "PATCH" | "DELETE" => {
             // Get the path
-            let path = parser.consume_until(" HTTP/1.1\r\n")?;
+            let path = parser.consume_until(" HTTP/1.1\r\n").await?;
 
             // Get the headers
             let mut headers = HashMap::new();
             loop {
-                let line = parser.consume_until("\r\n")?;
+                let line = parser.consume_until("\r\n").await?;
 
                 if line.len() == 0 {
                     break;
                 }
                 let mut header_parser = Parser::new(Cursor::new(line));
-                let key = header_parser.consume_until(":")?;
-                header_parser.consume_whitespaces()?;
-                let value = header_parser.consume_until_end()?;
+                let key = header_parser.consume_until(":").await?;
+                header_parser.consume_whitespaces().await?;
+                let value = header_parser.consume_until_end().await?;
                 if key.to_lowercase() != "host" && !key.to_lowercase().starts_with("proxy-") && key.to_lowercase() != "connection" {
                     headers.insert(key, value);
                 }
@@ -93,18 +96,18 @@ fn handle_client(stream: &mut TcpStream) -> std::io::Result<()> {
             // Get the body
             let mut body = vec![0u8; content_length];
             if content_length > 0 {
-                parser.inner().read_exact(&mut body)?;
+                parser.inner().read_exact(&mut body).await?;
             }
 
             // Make the http request
             let mut path_parser = Parser::new(Cursor::new(path.to_string()));
             // Consume the protocol
-            let _ = path_parser.consume_until("://");
-            let host = path_parser.consume_until("/")?;
+            let _ = path_parser.consume_until("://").await;
+            let host = path_parser.consume_until("/").await?;
             
             println!("{} {}", method, host);
             
-            let path = format!("/{}", path_parser.consume_until_end()?);
+            let path = format!("/{}", path_parser.consume_until_end().await?);
 
             let request = if content_length > 0 {
                 let mut request = format!(
@@ -122,15 +125,15 @@ fn handle_client(stream: &mut TcpStream) -> std::io::Result<()> {
             };
 
             // Make the connection
-            let mut proxy_stream = TcpStream::connect(format!("{}:80", host))?;
-            proxy_stream.write_all(&request)?;
+            let mut proxy_stream = TcpStream::connect(format!("{}:80", host)).await?;
+            proxy_stream.write_all(&request).await?;
 
             // Get the response
             let mut buffer = Vec::new();
-            proxy_stream.read_to_end(&mut buffer)?;
+            proxy_stream.read_to_end(&mut buffer).await?;
 
             // Write the response
-            parser.inner().write_all(&buffer)?;
+            parser.inner().get_mut().write_all(&buffer).await?;
 
             Ok(())
         }
@@ -138,7 +141,8 @@ fn handle_client(stream: &mut TcpStream) -> std::io::Result<()> {
     }
 }
 
-fn main() -> std::io::Result<()> {
+#[tokio::main]
+async fn main() -> std::io::Result<()> {
     // Get the port from the command line
     let port = std::env::args()
         .nth(1)
@@ -147,19 +151,19 @@ fn main() -> std::io::Result<()> {
         .expect("Invalid port");
 
     let addr = format!("0.0.0.0:{}", port);
-    let listener = TcpListener::bind(&addr)?;
+    let listener = TcpListener::bind(&addr).await?;
     println!("Listening on {}", addr);
 
     // accept connections and process them serially
-    for stream in listener.incoming() {
-        if let Ok(mut stream) = stream {
-            spawn(move || {
-                if let Err(_) = handle_client(&mut stream) {
-                    let _ = stream.write(b"HTTP/1.1 400 Bad Request\r\n\r\n");
-                }
-            });
-        }
+    loop {
+        let (stream, _) = listener.accept().await?;
+        spawn(async {
+            if let Err(_) = handle_client(stream).await {
+                //let _ = stream.write(b"HTTP/1.1 400 Bad Request\r\n\r\n").await;
+            }
+        });
     }
+
     Ok(())
 }
 
@@ -167,21 +171,21 @@ mod tests {
     #[allow(unused_imports)]
     use super::*;
 
-    #[test]
-    fn parser_consume_until() {
+    #[tokio::test]
+    async fn parser_consume_until() {
         use std::io::Cursor;
 
         let mut parser = Parser::new(Cursor::new("qwertyuioptest".to_string()));
         assert_eq!(
-            parser.consume_until("test").unwrap(),
+            parser.consume_until("test").await.unwrap(),
             "qwertyuiop".to_string()
         );
 
         let mut parser = Parser::new(Cursor::new("nothing".to_string()));
-        assert!(parser.consume_until("test").is_err());
+        assert!(parser.consume_until("test").await.is_err());
 
         let mut parser = Parser::new(Cursor::new("randomdata   test1 test2".to_string()));
-        assert_eq!(parser.consume_until("test").unwrap(), "randomdata   ");
-        assert_eq!(parser.consume_until("test").unwrap(), "1 ");
+        assert_eq!(parser.consume_until("test").await.unwrap(), "randomdata   ");
+        assert_eq!(parser.consume_until("test").await.unwrap(), "1 ");
     }
 }

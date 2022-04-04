@@ -1,22 +1,23 @@
-use std::io::{prelude::*, Result};
+use tokio::io::Result;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 #[derive(Debug)]
-pub struct Parser<T: Read> {
+pub struct Parser<T: AsyncReadExt + Unpin> {
     data: T,
     leftover: Option<u8>,
 }
 
-impl<T: Read> Parser<T> {
+impl<T: AsyncReadExt + Unpin> Parser<T> {
     pub fn new(data: T) -> Self {
         Parser { data, leftover: None }
     }
 
     /// Consume the data until we hit the needle
-    pub fn consume_until(&mut self, needle: &str) -> Result<String> {
+    pub async fn consume_until(&mut self, needle: &str) -> Result<String> {
         let mut consumed: String = String::new();
         let mut streak = 0;
         loop {
-            let byte = self.read_byte()?;
+            let byte = self.read_byte().await?;
             let next = byte as char;
             if next == needle.chars().nth(streak).unwrap() {
                 streak += 1;
@@ -37,27 +38,27 @@ impl<T: Read> Parser<T> {
         Ok(consumed)
     }
 
-    fn read_byte(&mut self) -> Result<u8> {
+    async fn read_byte(&mut self) -> Result<u8> {
         if let Some(b) = self.leftover {
             self.leftover = None;
             return Ok(b);
         }
 
         let mut buf = [0u8; 1];
-        self.data.read_exact(&mut buf)?;
+        self.data.read_exact(&mut buf).await?;
         Ok(buf[0])
     }
 
-    pub fn consume_until_end(&mut self) -> Result<String> {
+    pub async fn consume_until_end(&mut self) -> Result<String> {
         let mut buf = String::new();
-        self.data.read_to_string(&mut buf)?;
+        self.data.read_to_string(&mut buf).await?;
         Ok(buf)
     }
 
     /// Returns false if the parser has reached the end of the data
-    pub fn consume_whitespaces(&mut self) -> Result<()> {
+    pub async fn consume_whitespaces(&mut self) -> Result<()> {
         loop {
-            let byte = self.read_byte()?;
+            let byte = self.read_byte().await?;
             // check if whitespace
             if !(byte as char).is_whitespace() {
                 self.leftover = Some(byte);
